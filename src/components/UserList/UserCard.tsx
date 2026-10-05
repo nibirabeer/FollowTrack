@@ -139,6 +139,8 @@ export function UserCard({ user, category }: UserCardProps) {
           href={user.profileUrl}
           target="_blank"
           rel="noopener noreferrer"
+          aria-label={`Open @${user.username} on Instagram`}
+          title={`Open @${user.username} on Instagram`}
           onClick={() => {
             if (!isMarkedDone && category === 'theyDontFollowBack') {
               toggleUnfollowed(user.username);

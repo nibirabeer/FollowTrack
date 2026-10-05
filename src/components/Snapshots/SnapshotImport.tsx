@@ -5,27 +5,29 @@ import {
   FileText,
   CheckCircle2,
   ShieldCheck,
-  Code,
   Info,
-  HelpCircle,
+  LoaderCircle,
 } from 'lucide-react';
 import { useSnapshots } from '../../contexts/SnapshotContext';
 import { parseFollowers, parseFollowing, parseInstagramZip } from '../../lib/parser';
-import { Snapshot } from '../../types';
+import { InstagramUser, Snapshot } from '../../types';
+import { InstagramExportArchive } from '../../types/exportArchive';
+import { saveExportArchive } from '../../lib/exportArchiveStorage';
 
 export function SnapshotImport({ onClose }: { onClose?: () => void }) {
   const { addNewSnapshot, setError } = useSnapshots();
 
   const [label, setLabel] = useState('');
-  const [activeTab, setActiveTab] = useState<'zip' | 'files' | 'paste' | 'trick'>('zip');
+  const [activeTab, setActiveTab] = useState<'zip' | 'files' | 'paste'>('zip');
   
   // ZIP state
   const [zipFile, setZipFile] = useState<File | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // Files state
-  const [followersFile, setFollowersFile] = useState<File | null>(null);
+  const [followersFile, setFollowersFile] = useState<File[]>([]);
   const [followingFile, setFollowingFile] = useState<File | null>(null);
-  const [followersRaw, setFollowersRaw] = useState('');
+  const [followersRaw, setFollowersRaw] = useState<string[]>([]);
   const [followingRaw, setFollowingRaw] = useState('');
 
   // Paste state
@@ -33,37 +35,124 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
   const [pasteFollowing, setPasteFollowing] = useState('');
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReadingFiles, setIsReadingFiles] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+
+  const saveSnapshot = async (followers: InstagramUser[], following: InstagramUser[], archive?: InstagramExportArchive) => {
+    const importedAt = new Date();
+    const newSnapshot: Snapshot = {
+      id: `snap-${Date.now()}`,
+      date: importedAt.toISOString(),
+      label: label.trim() || `Instagram export (${importedAt.toLocaleDateString()})`,
+      followers,
+      following,
+      followerCount: followers.length,
+      followingCount: following.length,
+    };
+
+    if (archive) {
+      setStatusMessage('Saving your categorized export on this device…');
+      try {
+        await saveExportArchive(newSnapshot.id, archive);
+        newSnapshot.hasExtendedData = true;
+      } catch {
+        addNewSnapshot(newSnapshot);
+        setError('Follower analysis was saved, but the full export library could not be stored locally. Check your browser storage space and try importing again.');
+        onClose?.();
+        return;
+      }
+    }
+
+    addNewSnapshot(newSnapshot);
+    onClose?.();
+  };
+
+  const analyzeZip = async (file: File) => {
+    if (isSubmitting) return;
+    setError(null);
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Choose the ZIP archive downloaded from your Instagram data export.');
+      return;
+    }
+
+    setZipFile(file);
+    setIsSubmitting(true);
+    setStatusMessage('Opening your Instagram export…');
+    try {
+      const parsed = await parseInstagramZip(file, (completed, total) => {
+        setStatusMessage(`Scanning your export files · ${completed.toLocaleString()} of ${total.toLocaleString()}…`);
+      });
+      setStatusMessage('Matching connections and organizing the rest of your export…');
+      if (parsed.followers.length === 0 || parsed.following.length === 0) {
+        throw new Error('This ZIP is missing a followers or following list. Download both lists in your Instagram export and try again.');
+      }
+
+      const recordCount = parsed.archive.categories.reduce(
+        (total, category) => total + category.datasets.reduce((subtotal, dataset) => subtotal + dataset.records.length, 0),
+        0
+      );
+      setStatusMessage(`Organized ${recordCount.toLocaleString()} records across ${parsed.archive.categories.length} categories. Saving on this device…`);
+      await saveSnapshot(parsed.followers, parsed.following, parsed.archive);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to analyze this Instagram ZIP.';
+      setError(msg);
+    } finally {
+      setIsSubmitting(false);
+      setStatusMessage('');
+    }
+  };
 
   const handleZipUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setZipFile(file);
-    }
+    e.target.value = '';
+    if (file) void analyzeZip(file);
+  };
+
+  const handleZipDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) void analyzeZip(file);
   };
 
   const handleFileUpload = (
     e: React.ChangeEvent<HTMLInputElement>,
     type: 'followers' | 'following'
   ) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
 
     if (type === 'followers') {
-      setFollowersFile(file);
-      const reader = new FileReader();
-      reader.onload = (event) => setFollowersRaw((event.target?.result as string) || '');
-      reader.readAsText(file);
+      setFollowersFile(files);
+      setIsReadingFiles(true);
+      Promise.all(files.map((file) => file.text()))
+        .then(setFollowersRaw)
+        .catch(() => setError('Could not read one of the selected followers files.'))
+        .finally(() => setIsReadingFiles(false));
     } else {
+      const file = files[0];
       setFollowingFile(file);
-      const reader = new FileReader();
-      reader.onload = (event) => setFollowingRaw((event.target?.result as string) || '');
-      reader.readAsText(file);
+      setIsReadingFiles(true);
+      file.text()
+        .then(setFollowingRaw)
+        .catch(() => setError('Could not read the selected following file.'))
+        .finally(() => setIsReadingFiles(false));
     }
+    e.target.value = '';
   };
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
+    if (activeTab === 'zip') {
+      if (!zipFile) {
+        setError('Choose your Instagram export ZIP to start automatic analysis.');
+        return;
+      }
+      await analyzeZip(zipFile);
+      return;
+    }
+
     setIsSubmitting(true);
     setStatusMessage('Processing data...');
 
@@ -71,19 +160,17 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
       let followers = [];
       let following = [];
 
-      if (activeTab === 'zip') {
-        if (!zipFile) {
-          throw new Error('Please select an Instagram export ZIP file.');
-        }
-        setStatusMessage('Extracting files from ZIP archive...');
-        const parsed = await parseInstagramZip(zipFile);
-        followers = parsed.followers;
-        following = parsed.following;
-      } else if (activeTab === 'files') {
-        if (!followersRaw || !followingRaw) {
+      if (activeTab === 'files') {
+        if (followersRaw.length === 0 || !followingRaw) {
           throw new Error('Please upload both followers and following JSON/HTML files.');
         }
-        followers = parseFollowers(followersRaw);
+        followers = Array.from(
+          new Map(
+            followersRaw
+              .flatMap((raw) => parseFollowers(raw))
+              .map((user) => [user.username.toLowerCase(), user] as const)
+          ).values()
+        );
         following = parseFollowing(followingRaw);
       } else {
         if (!pasteFollowers.trim() || !pasteFollowing.trim()) {
@@ -93,22 +180,11 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
         following = parseFollowing(pasteFollowing);
       }
 
-      if (followers.length === 0 && following.length === 0) {
-        throw new Error('No user data could be found in the provided inputs.');
+      if (followers.length === 0 || following.length === 0) {
+        throw new Error('Both a followers list and a following list are required. Check your files and try again.');
       }
 
-      const newSnapshot: Snapshot = {
-        id: `snap-${Date.now()}`,
-        date: new Date().toISOString(),
-        label: label.trim() || `Real ID Import (${new Date().toLocaleDateString()})`,
-        followers,
-        following,
-        followerCount: followers.length,
-        followingCount: following.length,
-      };
-
-      addNewSnapshot(newSnapshot);
-      if (onClose) onClose();
+      await saveSnapshot(followers, following);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to import snapshot.';
       setError(msg);
@@ -138,12 +214,12 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
       <div className="flex items-start gap-2.5 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 text-xs mb-4 border border-emerald-100 dark:border-emerald-900/40">
         <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
         <p>
-          <strong>100% Account Safe:</strong> Never requires logging in, scraping, or your password. Your data is analyzed entirely in your browser.
+          <strong>Private by design:</strong> No login, scraping, or password. Selected export data is processed in your browser and is not sent to our service.
         </p>
       </div>
 
       {/* Tabs */}
-      <div className="flex bg-gray-100 dark:bg-gray-900 p-1 rounded-xl mb-5 overflow-x-auto">
+      <div className="import-tabs flex bg-gray-100 dark:bg-gray-900 p-1 rounded-xl mb-5 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('zip')}
@@ -154,7 +230,7 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
           }`}
         >
           <FileArchive className="w-3.5 h-3.5" />
-          <span>Upload ZIP (Easiest)</span>
+          <span>ZIP · Auto-analyze</span>
         </button>
 
         <button
@@ -183,64 +259,9 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
           <span>Paste Text / JSON</span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveTab('trick')}
-          className={`flex items-center justify-center gap-1.5 flex-1 min-w-[130px] py-2 text-xs font-semibold rounded-lg transition ${
-            activeTab === 'trick'
-              ? 'bg-white dark:bg-gray-800 text-violet-600 dark:text-violet-400 shadow-xs'
-              : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
-          }`}
-        >
-          <Code className="w-3.5 h-3.5" />
-          <span>Instant Browser Trick</span>
-        </button>
       </div>
 
-      {activeTab === 'trick' ? (
-        <div className="space-y-4 text-xs text-gray-600 dark:text-gray-300">
-          <div className="p-4 rounded-2xl bg-violet-50 dark:bg-violet-950/40 border border-violet-100 dark:border-violet-900/30">
-            <h3 className="font-bold text-violet-900 dark:text-violet-200 text-sm mb-2 flex items-center gap-2">
-              <Code className="w-4 h-4 text-violet-600" />
-              <span>Instant Trick: Grab Usernames without waiting for Meta Export</span>
-            </h3>
-            <p className="mb-2 text-gray-700 dark:text-gray-300">
-              Instagram's official data export can sometimes take hours. If you want instant analysis right now:
-            </p>
-            <ol className="list-decimal pl-5 space-y-2 text-gray-700 dark:text-gray-300">
-              <li>
-                Open <strong>instagram.com</strong> in Chrome/Safari on your computer and log in.
-              </li>
-              <li>
-                Go to your profile and click on <strong>Following</strong> (the popup modal will appear).
-              </li>
-              <li>
-                Press <kbd className="px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-700 font-mono">F12</kbd> (or Right Click &rarr; Inspect &rarr; <strong>Console</strong>).
-              </li>
-              <li>
-                Paste this 1-line script into the console to copy all following usernames to your clipboard:
-                <pre className="mt-1 p-2.5 rounded-xl bg-gray-900 text-gray-100 font-mono text-[11px] overflow-x-auto select-all cursor-pointer">
-{`copy(Array.from(document.querySelectorAll('a[role="link"] span')).map(e=>e.innerText.trim()).filter(u=>u && !u.includes(' ') && !u.includes('\\n')).join('\\n'))`}
-                </pre>
-              </li>
-              <li>
-                Paste into the <strong>"Paste Text / JSON"</strong> tab here. Repeat the same for <strong>Followers</strong>.
-              </li>
-            </ol>
-          </div>
-
-          <div className="text-center pt-2">
-            <button
-              type="button"
-              onClick={() => setActiveTab('paste')}
-              className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl font-medium transition"
-            >
-              Go to Paste Tab &rarr;
-            </button>
-          </div>
-        </div>
-      ) : (
-        <form onSubmit={handleImport} className="space-y-4">
+      <form onSubmit={handleImport} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
               Snapshot Name
@@ -256,32 +277,44 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
 
           {activeTab === 'zip' && (
             <div className="space-y-3">
-              <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-violet-500 dark:hover:border-violet-500 rounded-2xl p-6 text-center transition cursor-pointer relative bg-gray-50/50 dark:bg-gray-900/30">
+              <div
+                className={`file-drop-zone ${zipFile ? 'has-file' : ''} ${isDragOver ? 'is-drag-over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsDragOver(false);
+                }}
+                onDrop={handleZipDrop}
+                aria-busy={isSubmitting}
+              >
                 <input
                   type="file"
-                  accept=".zip"
+                  accept=".zip,application/zip"
                   onChange={handleZipUpload}
+                  disabled={isSubmitting}
                   className="absolute inset-0 opacity-0 cursor-pointer"
                 />
-                <div className="flex flex-col items-center">
-                  {zipFile ? (
-                    <CheckCircle2 className="w-10 h-10 text-emerald-500 mb-2" />
+                <div className="file-drop-content">
+                  {isSubmitting ? (
+                    <LoaderCircle className="file-drop-icon upload-spinner" />
+                  ) : zipFile ? (
+                    <CheckCircle2 className="file-drop-icon file-ready-icon" />
                   ) : (
-                    <FileArchive className="w-10 h-10 text-violet-500 mb-2" />
+                    <FileArchive className="file-drop-icon upload-icon" />
                   )}
-                  <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    {zipFile ? zipFile.name : 'Drop your Instagram .zip file here'}
+                  <span className={`file-drop-title ${zipFile ? 'upload-file-enter' : ''}`}>
+                    {isSubmitting ? 'Analyzing your Instagram export' : zipFile ? zipFile.name : 'Drop your Instagram export ZIP here'}
                   </span>
-                  <span className="text-xs text-gray-500 mt-1">
-                    {zipFile ? `${(zipFile.size / 1024 / 1024).toFixed(1)} MB selected` : 'We automatically extract followers and following files from the zip'}
+                  <span className="file-drop-caption">
+                    {isSubmitting ? statusMessage : zipFile ? `${(zipFile.size / 1024 / 1024).toFixed(1)} MB · Select another ZIP to analyze again` : 'Drop a ZIP here or tap to browse · We’ll find both lists and calculate your results'}
                   </span>
+                  {!isSubmitting && <span className="file-drop-browse">{zipFile ? 'Choose a different ZIP' : 'Browse files'}</span>}
                 </div>
               </div>
 
               <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
                 <Info className="w-3.5 h-3.5 text-violet-500 shrink-0" />
                 <span>
-                  Works directly with the ZIP file you downloaded from Instagram Settings &rarr; Accounts Center &rarr; Download your information.
+                  Works directly with your Instagram ZIP. Text records are stored on this device; photos and videos are indexed by filename, not copied into the library.
                 </span>
               </div>
             </div>
@@ -291,30 +324,31 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
             <div className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Followers Upload */}
-                <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl p-5 text-center hover:border-violet-500 transition cursor-pointer relative bg-gray-50/50 dark:bg-gray-900/30">
+                <div className={`file-choice-card ${followersFile.length ? 'has-file' : ''}`}>
                   <input
                     type="file"
                     accept=".json,.html"
+                    multiple
                     onChange={(e) => handleFileUpload(e, 'followers')}
                     className="absolute inset-0 opacity-0 cursor-pointer"
                   />
                   <div className="flex flex-col items-center">
-                    {followersFile ? (
+                    {followersFile.length ? (
                       <CheckCircle2 className="w-8 h-8 text-emerald-500 mb-2" />
                     ) : (
                       <Upload className="w-8 h-8 text-gray-400 mb-2" />
                     )}
-                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-200 truncate max-w-full">
-                      {followersFile ? followersFile.name : 'followers_1.json or .html'}
+                    <span className={`file-choice-name ${followersFile.length ? 'upload-file-enter' : ''}`}>
+                      {followersFile.length ? followersFile.map((file) => file.name).join(', ') : 'Choose followers file(s)'}
                     </span>
-                    <span className="text-[11px] text-gray-500 mt-1">
-                      Located in connections/followers_and_following/
+                    <span className="file-choice-caption">
+                      {followersFile.length ? `${followersFile.length} file${followersFile.length === 1 ? '' : 's'} selected` : 'followers_1.json · select all parts if split'}
                     </span>
                   </div>
                 </div>
 
                 {/* Following Upload */}
-                <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl p-5 text-center hover:border-violet-500 transition cursor-pointer relative bg-gray-50/50 dark:bg-gray-900/30">
+                <div className={`file-choice-card ${followingFile ? 'has-file' : ''}`}>
                   <input
                     type="file"
                     accept=".json,.html"
@@ -327,11 +361,11 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
                     ) : (
                       <FileText className="w-8 h-8 text-gray-400 mb-2" />
                     )}
-                    <span className="text-xs font-semibold text-gray-900 dark:text-gray-200 truncate max-w-full">
-                      {followingFile ? followingFile.name : 'following.json or .html'}
+                    <span className={`file-choice-name ${followingFile ? 'upload-file-enter' : ''}`}>
+                      {followingFile ? followingFile.name : 'Choose following file'}
                     </span>
-                    <span className="text-[11px] text-gray-500 mt-1">
-                      Located in connections/followers_and_following/
+                    <span className="file-choice-caption">
+                      {followingFile ? 'Following list selected' : 'following.json · or following.html'}
                     </span>
                   </div>
                 </div>
@@ -368,12 +402,13 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-3 border-t border-gray-100 dark:border-gray-700/50">
-            <span className="text-xs text-violet-600 dark:text-violet-400 font-medium">
-              {statusMessage}
+          <div className="import-submit-row">
+            <span className={`upload-status ${isSubmitting || isReadingFiles ? 'is-processing' : ''}`} aria-live="polite">
+              {(isSubmitting || isReadingFiles) && <LoaderCircle size={15} className="upload-spinner" />}
+              {isReadingFiles ? 'Reading your selected files…' : isSubmitting ? statusMessage || 'Preparing your lists…' : 'Export data remains in this browser.'}
             </span>
 
-            <div className="flex items-center gap-2">
+            <div className="import-submit-actions flex items-center gap-2">
               {onClose && (
                 <button
                   type="button"
@@ -385,15 +420,14 @@ export function SnapshotImport({ onClose }: { onClose?: () => void }) {
               )}
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="px-6 py-2.5 bg-violet-600 hover:bg-violet-700 active:scale-95 text-white font-medium text-xs sm:text-sm rounded-xl transition shadow-md shadow-violet-500/20 disabled:opacity-50"
+                disabled={isSubmitting || isReadingFiles}
+                className="import-submit-button px-6 py-2.5 bg-violet-600 hover:bg-violet-700 active:scale-95 text-white font-medium text-xs sm:text-sm rounded-xl transition shadow-md shadow-violet-500/20 disabled:opacity-50"
               >
-                {isSubmitting ? 'Analyzing...' : 'Analyze My Account'}
+                {isReadingFiles ? 'Reading files…' : isSubmitting ? activeTab === 'zip' ? 'Analyzing export…' : 'Analyzing lists…' : activeTab === 'zip' ? zipFile ? 'Try ZIP again' : 'Choose a ZIP to analyze' : 'Analyze my lists'}
               </button>
             </div>
           </div>
-        </form>
-      )}
+      </form>
     </div>
   );
 }

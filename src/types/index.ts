@@ -12,6 +12,7 @@ export interface Snapshot {
   following: InstagramUser[];
   followerCount: number;
   followingCount: number;
+  hasExtendedData?: boolean;
 }
 
 export interface ComparisonResult {

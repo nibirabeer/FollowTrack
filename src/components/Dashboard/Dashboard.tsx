@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Plus, Sparkles, FolderArchive } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Plus, FolderArchive } from 'lucide-react';
 import { StatsCards } from './StatsCards';
 import { CategoryTabs } from './CategoryTabs';
 import { SnapshotCompare } from '../Snapshots/SnapshotCompare';
@@ -7,9 +7,11 @@ import { SnapshotImport } from '../Snapshots/SnapshotImport';
 import { SnapshotList } from '../Snapshots/SnapshotList';
 import { UserList } from '../UserList/UserList';
 import { useSnapshots } from '../../contexts/SnapshotContext';
-import { EmptyState } from '../Common/EmptyState';
 import { LoadingState } from '../Common/LoadingState';
-import { sampleSnapshots } from '../../data/sampleData';
+import { ExportWalkthrough } from './ExportWalkthrough';
+import { ExportLibrary } from './ExportLibrary';
+import { loadExportArchive } from '../../lib/exportArchiveStorage';
+import { InstagramExportArchive } from '../../types/exportArchive';
 
 export function Dashboard({ onActionReady }: { onActionReady?: (openImport: () => void, openHistory: () => void) => void }) {
   const {
@@ -17,19 +19,40 @@ export function Dashboard({ onActionReady }: { onActionReady?: (openImport: () =
     currentComparison,
     selectedCategory,
     isLoading,
-    addNewSnapshot,
   } = useSnapshots();
 
   const [showImport, setShowImport] = useState(false);
   const [showSnapshotsList, setShowSnapshotsList] = useState(false);
+  const [exportArchive, setExportArchive] = useState<InstagramExportArchive | null>(null);
+  const importPanelRef = useRef<HTMLDivElement>(null);
+
+  const latestArchiveSnapshot = [...snapshots]
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .find((snapshot) => snapshot.hasExtendedData);
+  const latestArchiveId = latestArchiveSnapshot?.id || null;
 
   useEffect(() => {
     onActionReady?.(() => setShowImport(true), () => setShowSnapshotsList(true));
   }, [onActionReady]);
 
-  const loadSampleData = () => {
-    sampleSnapshots.forEach((snap) => addNewSnapshot(snap));
-  };
+  useEffect(() => {
+    if (!showImport) return;
+    importPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [showImport]);
+
+  useEffect(() => {
+    let isCurrent = true;
+    if (!latestArchiveId) {
+      setExportArchive(null);
+      return () => { isCurrent = false; };
+    }
+
+    setExportArchive(null);
+    void loadExportArchive(latestArchiveId)
+      .then((archive) => { if (isCurrent) setExportArchive(archive); })
+      .catch(() => { if (isCurrent) setExportArchive(null); });
+    return () => { isCurrent = false; };
+  }, [latestArchiveId]);
 
   if (isLoading) {
     return <LoadingState />;
@@ -43,28 +66,19 @@ export function Dashboard({ onActionReady }: { onActionReady?: (openImport: () =
       {/* Top Action Bar */}
       <div className="dashboard-intro">
         <div>
-          <h2 className="dashboard-title text-xl sm:text-2xl font-black text-gray-900 dark:text-white tracking-tight">
+          <div className="dashboard-eyebrow"><span className="status-orb" /> PRIVATE FOLLOWER INSIGHTS</div>
+          <h1 className="dashboard-title text-xl sm:text-2xl font-black text-gray-900 dark:text-white tracking-tight">
             Follower Analytics
-          </h2>
+          </h1>
           <p className="dashboard-subtitle text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-            Audit your audience, detect unfollowers, and track non-reciprocal accounts safely.
+            A clearer picture of your Instagram connections, built from your own data export.
           </p>
         </div>
 
         <div className="dashboard-actions flex items-center gap-2">
-          {snapshots.length === 0 && (
-            <button
-              onClick={loadSampleData}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-violet-50 hover:bg-violet-100 dark:bg-violet-950/50 dark:hover:bg-violet-900/50 text-violet-700 dark:text-violet-300 rounded-xl transition"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Load Demo Data</span>
-            </button>
-          )}
-
           <button
             onClick={() => setShowSnapshotsList(!showSnapshotsList)}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-750 transition shadow-2xs"
+              className="button-glass flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-750 transition shadow-2xs"
           >
             <FolderArchive className="w-3.5 h-3.5" />
             <span>Manage Snapshots</span>
@@ -82,14 +96,14 @@ export function Dashboard({ onActionReady }: { onActionReady?: (openImport: () =
 
       {/* Snapshot Import Drawer/Modal */}
       {showImport && (
-        <div className="mb-6">
+        <div ref={importPanelRef} className="import-panel-anchor mb-6">
           <SnapshotImport onClose={() => setShowImport(false)} />
         </div>
       )}
 
       {/* Snapshot Manager Drawer */}
       {showSnapshotsList && (
-        <div className="bg-gray-50 dark:bg-gray-900/60 p-4 rounded-3xl border border-gray-200/60 dark:border-gray-800 mb-6">
+        <div className="glass-surface bg-gray-50 dark:bg-gray-900/60 p-4 rounded-3xl border border-gray-200/60 dark:border-gray-800 mb-6">
           <SnapshotList onImportClick={() => setShowImport(true)} />
         </div>
       )}
@@ -97,20 +111,14 @@ export function Dashboard({ onActionReady }: { onActionReady?: (openImport: () =
       {/* Metrics Cards */}
       <StatsCards />
 
+      {exportArchive && <ExportLibrary archive={exportArchive} snapshotLabel={latestArchiveSnapshot?.label || 'Instagram export'} />}
+
       {/* Snapshot Compare Selector */}
       {snapshots.length > 0 && <SnapshotCompare />}
 
       {/* Category Tabs & List */}
       {snapshots.length === 0 ? (
-        <EmptyState
-          icon={<Sparkles className="w-8 h-8" />}
-          title="No follower data yet"
-          description="Get started by loading realistic sample data to explore FollowTrack, or import your official Instagram export files."
-          action={{
-            label: 'Load Demo Data',
-            onClick: loadSampleData,
-          }}
-        />
+        <ExportWalkthrough onUpload={() => setShowImport(true)} />
       ) : currentComparison && selectedCategory ? (
         <div className="space-y-4">
           <CategoryTabs />

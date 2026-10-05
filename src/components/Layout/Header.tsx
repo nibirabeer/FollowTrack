@@ -8,7 +8,9 @@ export function Header() {
     <header id="top" className="app-header sticky top-0 z-40 bg-white/95 dark:bg-[#171619]/95 backdrop-blur-md border-b transition-colors duration-200">
       <div className="app-header-inner mx-auto px-4 sm:px-6 flex items-center justify-between">
         <a className="brand-wordmark" href="#top" aria-label="FollowTrack home">
-          <span className="brand-monogram" aria-hidden="true">F</span>
+          <span className="brand-image-frame" aria-hidden="true">
+            <img className="brand-image" src="/followtrack-mark.png" alt="" />
+          </span>
           <span className="brand-name">follow<span>track</span></span>
         </a>
 

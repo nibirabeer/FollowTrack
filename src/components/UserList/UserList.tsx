@@ -1,13 +1,14 @@
 import { useState, useMemo } from 'react';
 import {
   Search,
+  ArrowRight,
   UserX,
   Copy,
   Check,
-  Zap,
   Shield,
   CheckCircle2,
   RotateCcw,
+  ShieldCheck,
 } from 'lucide-react';
 import { InstagramUser, CategoryType } from '../../types';
 import { UserCard } from './UserCard';
@@ -94,7 +95,7 @@ export function UserList({ users, category }: UserListProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isUnfollowCategory = category === 'theyDontFollowBack' || category === 'unfollowedMe';
+  const isUnfollowCategory = category === 'theyDontFollowBack';
 
   if (users.length === 0) {
     return (
@@ -110,17 +111,17 @@ export function UserList({ users, category }: UserListProps) {
     <div className="space-y-4">
       {/* Session Action Banner for Unfollowers */}
       {isUnfollowCategory && (
-        <div className="bg-gradient-to-r from-amber-500/10 via-violet-500/10 to-rose-500/10 border border-amber-200 dark:border-amber-900/40 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="unfollow-assistant-banner">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-amber-500 text-white shrink-0">
-              <Zap className="w-4 h-4" />
+            <div className="unfollow-assistant-icon">
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white leading-tight">
+              <h4 className="unfollow-assistant-title">
                 Safe Unfollow Assistant
               </h4>
-              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
-                Review and unfollow safely with 1-click navigation &bull; Marked Done: <strong>{unfollowedInSession.length}</strong>
+              <p className="unfollow-assistant-copy">
+                Review each profile manually. Nothing is unfollowed automatically. <span>{unfollowedInSession.length} marked done</span>
               </p>
             </div>
           </div>
@@ -129,20 +130,22 @@ export function UserList({ users, category }: UserListProps) {
             {unfollowedInSession.length > 0 && (
               <button
                 onClick={clearSessionUnfollowed}
-                title="Reset session counter"
+                title="Clear marked-done statuses"
+                aria-label="Clear marked-done statuses"
                 className="px-2.5 py-2 text-xs font-semibold text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 rounded-xl transition flex items-center gap-1"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
+                <span>Clear marks</span>
               </button>
             )}
 
             <button
               onClick={() => setShowQueue(true)}
-              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 text-white text-xs font-bold rounded-xl shadow-md shadow-amber-500/20 active:scale-95 transition"
+              className="unfollow-assistant-cta"
             >
-              <Zap className="w-3.5 h-3.5" />
-              <span>Start Fast Queue</span>
+              <ShieldCheck className="w-4 h-4" />
+              <span>Review accounts</span>
+              <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

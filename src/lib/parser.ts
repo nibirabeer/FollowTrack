@@ -1,5 +1,7 @@
 import JSZip from 'jszip';
 import { InstagramUser } from '../types';
+import { createExportCategories, classifyInstagramPath, parseExportFileRecords } from './exportArchive';
+import { InstagramDataCategoryId, InstagramExportArchive, InstagramExportDataset, InstagramExportRecord } from '../types/exportArchive';
 
 /**
  * Strict validator for Instagram usernames.
@@ -152,9 +154,36 @@ function parseInstagramGeneric(data: any): InstagramUser[] {
   return users;
 }
 
+function extractInstagramProfileUsername(rawUrl: string): string {
+  if (!rawUrl.trim()) return '';
+
+  try {
+    const url = new URL(rawUrl, 'https://www.instagram.com');
+    const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+    if (hostname !== 'instagram.com') return '';
+
+    const segments = url.pathname.split('/').filter(Boolean).map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    });
+    if (segments[0]?.toLowerCase() === '_u') segments.shift();
+
+    const candidate = segments[0] || '';
+    const reservedRoutes = new Set(['accounts', 'explore', 'direct', 'about', 'developer', 'legal', 'p']);
+    if (!candidate || reservedRoutes.has(candidate.toLowerCase())) return '';
+
+    const username = normalizeUsername(candidate);
+    return isValidInstagramUsername(username) ? username : '';
+  } catch {
+    return '';
+  }
+}
+
 /**
- * Reliably parses Instagram HTML export files using DOMParser.
- * Removes <style>, <script>, <head> tags to prevent extracting CSS rules as usernames.
+ * Parses Instagram HTML export files from Instagram profile links and account labels.
  */
 export function parseHtmlExport(htmlString: string): InstagramUser[] {
   const users: InstagramUser[] = [];
@@ -170,14 +199,8 @@ export function parseHtmlExport(htmlString: string): InstagramUser[] {
       const anchors = doc.querySelectorAll('a');
       for (const a of anchors) {
         const href = a.getAttribute('href') || '';
-        const text = a.textContent?.trim() || '';
-
-        let username = '';
-        if (href.includes('instagram.com')) {
-          username = normalizeUsername(href);
-        } else if (text) {
-          username = normalizeUsername(text);
-        }
+        const text = (a.textContent || a.getAttribute('aria-label') || '').trim();
+        const username = extractInstagramProfileUsername(href) || (!href ? normalizeUsername(text) : '');
 
         if (isValidInstagramUsername(username) && !seen.has(username.toLowerCase())) {
           seen.add(username.toLowerCase());
@@ -194,12 +217,12 @@ export function parseHtmlExport(htmlString: string): InstagramUser[] {
     }
   }
 
-  // Regex fallback matching ONLY clean instagram links
-  const regex = /href=["']https?:\/\/(?:www\.)?instagram\.com\/(?:_u\/)?([a-zA-Z0-9._]+)\/?["']/gi;
+  // Regex fallback for environments without DOMParser and HTML with unusual whitespace.
+  const regex = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
   let match;
   while ((match = regex.exec(htmlString)) !== null) {
-    const raw = match[1];
-    const username = normalizeUsername(raw);
+    const raw = match[1] || match[2] || match[3] || '';
+    const username = extractInstagramProfileUsername(raw);
     if (isValidInstagramUsername(username) && !seen.has(username.toLowerCase())) {
       seen.add(username.toLowerCase());
       users.push({
@@ -237,7 +260,7 @@ export function parseFollowers(rawString: string): InstagramUser[] {
     if (trimmed.includes('<') && trimmed.includes('>')) {
       const htmlUsers = parseHtmlExport(trimmed);
       if (htmlUsers.length > 0) return htmlUsers;
-      throw new Error('Could not find follower links in this HTML export.');
+      throw new Error('No Instagram account links were found in this followers HTML file. Select followers_1.html from the original Instagram export, or upload the full ZIP instead.');
     }
 
     const fallbackList = parseUsernameList(trimmed);
@@ -273,7 +296,7 @@ export function parseFollowing(rawString: string): InstagramUser[] {
     if (trimmed.includes('<') && trimmed.includes('>')) {
       const htmlUsers = parseHtmlExport(trimmed);
       if (htmlUsers.length > 0) return htmlUsers;
-      throw new Error('Could not find following links in this HTML export.');
+      throw new Error('No Instagram account links were found in this following HTML file. Select following.html from the original Instagram export, or upload the full ZIP instead.');
     }
 
     const fallbackList = parseUsernameList(trimmed);
@@ -317,71 +340,155 @@ export function parseUsernameList(text: string): InstagramUser[] {
 /**
  * Extracts and parses Instagram followers and following directly from a downloaded Instagram .zip archive.
  */
-export async function parseInstagramZip(zipFile: File): Promise<{
+export async function parseInstagramZip(
+  zipFile: File,
+  onProgress?: (completed: number, total: number) => void
+): Promise<{
   followers: InstagramUser[];
   following: InstagramUser[];
+  archive: InstagramExportArchive;
 }> {
   const zip = new JSZip();
   const contents = await zip.loadAsync(zipFile);
 
   const followersList: InstagramUser[] = [];
   const followingList: InstagramUser[] = [];
-
   const files = Object.keys(contents.files);
+  const dataByCategory = new Map<InstagramDataCategoryId, Map<string, InstagramExportDataset>>();
+  const mediaExtensions = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'mov', 'm4v', 'aac', 'ogg', 'mp3', 'srt']);
+  const readableExtensions = new Set(['html', 'htm', 'json', 'txt', 'csv']);
+  const coreConnectionTexts = new Map<string, string>();
+  let messageThreadNumber = 0;
 
+  // Validate the required lists before scanning the much larger media and message sections.
   for (const filename of files) {
-    const lower = filename.toLowerCase();
+    const lower = filename.replace(/\\/g, '/').toLowerCase();
+    const basename = lower.split('/').pop() || '';
+    const inConnectionFolder = /(^|\/)connections\/followers_and_following\//.test(lower);
+    const isRootListFile = !lower.includes('/') && /^followers(?:_\d+)?\.(?:json|html)$|^following(?:_\d+)?\.(?:json|html)$/.test(basename);
+    if ((!inConnectionFolder && !isRootListFile) || !/^followers(?:_\d+)?\.(?:json|html)$|^following(?:_\d+)?\.(?:json|html)$/.test(basename)) continue;
     const entry = contents.files[filename];
     if (entry.dir) continue;
-
-    // Follower files: followers_1.json, followers.json, followers_1.html, etc.
-    if (
-      lower.includes('followers_') ||
-      lower.endsWith('followers.json') ||
-      lower.endsWith('followers.html') ||
-      lower.includes('followers_1')
-    ) {
+    try {
       const text = await entry.async('string');
-      const users = parseFollowers(text);
-      followersList.push(...users);
-    } else if (
-      lower.includes('following') &&
-      !lower.includes('close_friends') &&
-      !lower.includes('pending') &&
-      !lower.includes('hashtag') &&
-      (lower.endsWith('.json') || lower.endsWith('.html'))
-    ) {
-      const text = await entry.async('string');
-      const users = parseFollowing(text);
-      followingList.push(...users);
+      coreConnectionTexts.set(filename, text);
+      if (/^followers(?:_\d+)?\.(?:json|html)$/.test(basename)) followersList.push(...parseFollowers(text));
+      else followingList.push(...parseFollowing(text));
+    } catch {
+      // Missing or malformed core lists are reported below with a clear recovery hint.
     }
   }
 
-  // Deduplicate case-insensitively and filter only valid usernames
   const uniqueFollowers = Array.from(
-    new Map(
-      followersList
-        .filter((u) => isValidInstagramUsername(u.username))
-        .map((u) => [u.username.toLowerCase(), u])
-    ).values()
+    new Map(followersList.filter((user) => isValidInstagramUsername(user.username)).map((user) => [user.username.toLowerCase(), user])).values()
   );
-
   const uniqueFollowing = Array.from(
-    new Map(
-      followingList
-        .filter((u) => isValidInstagramUsername(u.username))
-        .map((u) => [u.username.toLowerCase(), u])
-    ).values()
+    new Map(followingList.filter((user) => isValidInstagramUsername(user.username)).map((user) => [user.username.toLowerCase(), user])).values()
   );
 
-  if (uniqueFollowers.length === 0 && uniqueFollowing.length === 0) {
-    throw new Error(
-      'Could not find followers or following files inside this ZIP. Please ensure it is the archive from Instagram.'
-    );
+  if (uniqueFollowers.length === 0 || uniqueFollowing.length === 0) {
+    const missing = [uniqueFollowers.length === 0 ? 'followers' : '', uniqueFollowing.length === 0 ? 'following' : ''].filter(Boolean).join(' and ');
+    throw new Error(`This Instagram ZIP is missing a readable ${missing} list. Download both Followers and Following in JSON or HTML format.`);
   }
+
+  const addDatasetRecords = (
+    categoryId: InstagramDataCategoryId,
+    datasetId: string,
+    title: string,
+    sourceType: InstagramExportDataset['sourceType'],
+    records: InstagramExportRecord[]
+  ) => {
+    let datasets = dataByCategory.get(categoryId);
+    if (!datasets) {
+      datasets = new Map();
+      dataByCategory.set(categoryId, datasets);
+    }
+    const existing = datasets.get(datasetId);
+    if (existing) existing.records.push(...records);
+    else datasets.set(datasetId, { id: datasetId, title, sourceType, records });
+  };
+
+  for (let index = 0; index < files.length; index += 1) {
+    const filename = files[index];
+    if (index % 24 === 0 || index === files.length - 1) onProgress?.(index + 1, files.length);
+    const lower = filename.replace(/\\/g, '/').toLowerCase();
+    const entry = contents.files[filename];
+    if (entry.dir) continue;
+
+    const basename = lower.split('/').pop() || '';
+    const extension = basename.split('.').pop() || '';
+    const normalizedPath = lower.replace(/^\.\//, '');
+    const categoryId = classifyInstagramPath(normalizedPath);
+
+    if (mediaExtensions.has(extension)) {
+      const parent = normalizedPath.split('/').slice(0, -1).join('/') || 'media';
+      const id = `media:${parent}`;
+      const existing = dataByCategory.get('content')?.get(id);
+      const sequence = (existing?.records.length || 0) + 1;
+      const mediaType = ['mp4', 'mov', 'm4v'].includes(extension) ? 'Video' : ['aac', 'ogg', 'mp3'].includes(extension) ? 'Audio' : extension === 'srt' ? 'Caption file' : 'Image';
+      addDatasetRecords('content', id, parent.split('/').map((part) => part.replace(/_/g, ' ')).join(' / '), 'media', [{
+        id: `${id}:${sequence}`,
+        title: basename,
+        content: `${mediaType} file · .${extension}`,
+      }]);
+      continue;
+    }
+
+    if (!readableExtensions.has(extension)) continue;
+
+    try {
+      const text = coreConnectionTexts.get(filename) ?? await entry.async('string');
+
+      if (/no-data\.(?:txt|html)$/i.test(basename) || /^\s*(?:no data available|no data)\s*$/i.test(text)) {
+        continue;
+      }
+
+      const extensionType: InstagramExportDataset['sourceType'] = extension === 'json' ? 'json' : ['html', 'htm'].includes(extension) ? 'html' : 'text';
+      const messagePath = normalizedPath.includes('/messages/');
+      const isMessageChunk = messagePath && /^message_\d+\.html$/.test(basename);
+      let datasetId = normalizedPath;
+      let title = basename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+      if (isMessageChunk) {
+        const parent = normalizedPath.split('/').slice(0, -1).join('/');
+        datasetId = `conversation:${parent}`;
+        const existing = dataByCategory.get('messages')?.get(datasetId);
+        if (existing) {
+          title = existing.title;
+        } else {
+          messageThreadNumber += 1;
+          const folder = parent.split('/').pop() || '';
+          const label = folder.replace(/^instagramuser_?/i, '').replace(/_\d+$/, '').replace(/and(\d+)others/gi, ' + $1 others').replace(/_/g, ' ').trim();
+          title = label && !/^\d+$/.test(label) ? `Chat · ${label}` : `Conversation ${String(messageThreadNumber).padStart(3, '0')}`;
+        }
+      } else if (messagePath && basename === 'chats.html') {
+        title = 'Conversation list';
+      } else {
+        title = basename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+      }
+
+      const records = parseExportFileRecords(text, normalizedPath).map((record, recordIndex) =>
+        isMessageChunk ? { ...record, title: `Message ${recordIndex + 1}` } : record
+      );
+      addDatasetRecords(categoryId, datasetId, title, extensionType, records);
+    } catch {
+      // Keep scanning the rest of the archive if one export document is malformed.
+    }
+
+  }
+
+  const datasets = new Map<InstagramDataCategoryId, InstagramExportDataset[]>(
+    Array.from(dataByCategory, ([category, items]) => [category, Array.from(items.values())])
+  );
 
   return {
     followers: uniqueFollowers,
     following: uniqueFollowing,
+    archive: {
+      sourceName: zipFile.name,
+      analyzedAt: new Date().toISOString(),
+      totalFiles: files.filter((filename) => !contents.files[filename].dir).length,
+      categories: createExportCategories(datasets),
+    },
   };
 }

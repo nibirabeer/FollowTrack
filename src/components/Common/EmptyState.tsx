@@ -12,7 +12,7 @@ interface EmptyStateProps {
 
 export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center p-8 text-center bg-white dark:bg-gray-850 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm my-4 transition-colors">
+    <div className="glass-surface flex flex-col items-center justify-center p-8 text-center bg-white dark:bg-gray-850 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm my-4 transition-colors">
       <div className="p-4 bg-violet-50 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 rounded-2xl mb-4">
         {icon}
       </div>
@@ -29,4 +29,3 @@ export function EmptyState({ icon, title, description, action }: EmptyStateProps
     </div>
   );
 }
-

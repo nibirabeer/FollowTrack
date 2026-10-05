@@ -62,7 +62,7 @@ export function SnapshotList({ onImportClick }: { onImportClick: () => void }) {
         {snapshots.map((snap) => (
           <div
             key={snap.id}
-            className="p-4 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700/60 shadow-xs flex flex-col justify-between"
+            className="glass-surface p-4 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700/60 shadow-xs flex flex-col justify-between"
           >
             <div>
               <div className="flex items-start justify-between gap-2 mb-2">

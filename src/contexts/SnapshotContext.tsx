@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Snapshot, ComparisonResult, CategoryType } from '../types';
 import { saveSnapshots, loadSnapshots, addSnapshot, deleteSnapshot, clearAllSnapshots } from '../lib/storage';
 import { compareSnapshots } from '../lib/comparison';
+import { clearExportArchives, deleteExportArchive } from '../lib/exportArchiveStorage';
 
 interface SnapshotContextType {
   snapshots: Snapshot[];
@@ -103,6 +104,7 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
   const removeSnapshot = (id: string) => {
     try {
       const updated = deleteSnapshot(id);
+      void deleteExportArchive(id).catch(() => undefined);
       setSnapshots(updated);
       if (currentComparison) {
         clearComparison();
@@ -115,6 +117,7 @@ export function SnapshotProvider({ children }: { children: React.ReactNode }) {
   const clearAll = () => {
     try {
       clearAllSnapshots();
+      void clearExportArchives().catch(() => undefined);
       setSnapshots([]);
       clearComparison();
     } catch (err) {
